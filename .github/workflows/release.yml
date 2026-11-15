@@ -1,0 +1,202 @@
+# Builds Ledgerly from the private source repo and attaches the downloads to a
+# DRAFT release here. See ADR-0002 in the source repo.
+#
+# Started by the source repo's release-trigger workflow (repository_dispatch),
+# or by hand: Actions > Release > Run workflow > tag.
+#
+# Security: this repo is public. No push / pull_request / pull_request_target
+# triggers, so forks can never run this or reach SOURCE_DEPLOY_KEY. The tag is
+# validated before use and only reaches scripts through env. Build output is
+# kept out of the logs except the tail of a failed build.
+name: Release
+
+on:
+  repository_dispatch:
+    types: [build-release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag in the source repo, e.g. v0.0.1
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.client_payload.tag || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: meetocode/ledgerly-source
+  FLUTTER_VERSION: 3.44.8
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Validate tag
+        id: tag
+        env:
+          RAW_TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+        run: |
+          if [[ ! "$RAW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag must look like v1.2.3"
+            exit 1
+          fi
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          path: source
+
+      - name: Check version and read release notes
+        working-directory: source
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          tool/check_version.sh "$TAG" > /dev/null
+          git fetch --quiet --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [[ "$(git cat-file -t "$TAG")" != tag ]]; then
+            echo "::error::$TAG is not an annotated tag (use git tag -a)"
+            exit 1
+          fi
+          git tag -l --format='%(contents)' "$TAG" > "$RUNNER_TEMP/notes.md"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          if gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' | grep -qx "$TAG"; then
+            echo "Release $TAG already exists; its files will be replaced."
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Ledgerly $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build
+        run: |
+          flutter build windows --release --build-name $env:VERSION --build-number $env:BUILD_NUMBER *> build.log
+          if ($LASTEXITCODE -ne 0) { Get-Content build.log -Tail 40; exit 1 }
+
+      - name: Package
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath dist\Ledgerly-windows-x64.zip
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DAppVersion=$env:VERSION" packaging\windows\ledgerly.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item build\installer\Ledgerly-Setup.exe dist\
+
+      - name: Upload
+        run: gh release upload $env:TAG dist\Ledgerly-Setup.exe dist\Ledgerly-windows-x64.zip --clobber --repo $env:GITHUB_REPOSITORY
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev > /dev/null
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build
+        run: |
+          flutter build linux --release --build-name "$VERSION" --build-number "$BUILD_NUMBER" > build.log 2>&1 \
+            || { tail -n 40 build.log; exit 1; }
+
+      - name: Package and upload
+        run: |
+          mkdir -p dist
+          tar -czf dist/Ledgerly-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+          gh release upload "$TAG" dist/Ledgerly-linux-x64.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+
+  ios:
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build (unsigned)
+        run: |
+          flutter build ios --release --no-codesign --build-name "$VERSION" --build-number "$BUILD_NUMBER" > build.log 2>&1 \
+            || { tail -n 40 build.log; exit 1; }
+
+      - name: Package and upload
+        run: |
+          packaging/ios/make_ipa.sh build/ios/iphoneos/Runner.app dist/Ledgerly-unsigned.ipa > /dev/null
+          gh release upload "$TAG" dist/Ledgerly-unsigned.ipa --clobber --repo "$GITHUB_REPOSITORY"
