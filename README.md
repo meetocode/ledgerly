@@ -35,7 +35,7 @@ Your ledger lives on your device. No email, no cloud account.
 
 ## What's coming
 
-Ledgerly 0.0.x is an early preview. These are on the way:
+Ledgerly is an early preview. These are on the way:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/features-dark.svg">
