@@ -33,9 +33,7 @@ Your ledger lives on your device. No email, no cloud account.
 | <img src="assets/icon-linux.svg" width="20" alt=""> | **Linux** | [`Ledgerly-linux-x64.tar.gz`](https://github.com/meetocode/ledgerly/releases/latest/download/Ledgerly-linux-x64.tar.gz) | 64-bit build for Debian, Ubuntu and similar. |
 | <img src="assets/icon-apple.svg" width="20" alt=""> | **iPhone** | [`Ledgerly-unsigned.ipa`](https://github.com/meetocode/ledgerly/releases/latest/download/Ledgerly-unsigned.ipa) | Unsigned app. Install it with Sideloadly. |
 
-## What's coming
-
-Ledgerly 0.0.x is an early preview. These are on the way:
+## Features
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/features-dark.svg">
