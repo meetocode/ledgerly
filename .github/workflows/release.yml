@@ -200,3 +200,52 @@ jobs:
         run: |
           packaging/ios/make_ipa.sh build/ios/iphoneos/Runner.app dist/Ledgerly-unsigned.ipa > /dev/null
           gh release upload "$TAG" dist/Ledgerly-unsigned.ipa --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Signs the manifest Ledgerly checks for Updates (plan 0003, ADR-0003).
+  # Runs after every file is uploaded; the Release stays a draft until you
+  # publish it, and only then does it become releases/latest.
+  manifest:
+    needs: [prepare, windows, linux, ios]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Collect files and notes
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/dist" --pattern 'Ledgerly-*'
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/notes.md"
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.draft == false and .prerelease == false)
+                      | {version: (.tag_name | ltrimstr("v")), date: .published_at[0:10], notes: .body}' \
+            | jq -s . > "$RUNNER_TEMP/releases.json"
+
+      - name: Sign manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem"
+          trap 'rm -f "$RUNNER_TEMP/update-key.pem"' EXIT
+          if [[ -z "$UPDATE_SIGNING_KEY" ]]; then
+            echo "::error::UPDATE_SIGNING_KEY is not set. Run tool/update_key_wizard.sh in the source repo."
+            exit 1
+          fi
+          tool/make_update_manifest.sh "$VERSION" "$(date -u +%F)" "$RUNNER_TEMP/dist" \
+            "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/releases.json" \
+            "$RUNNER_TEMP/update-key.pem" "$RUNNER_TEMP/manifest"
+
+      - name: Upload manifest
+        run: |
+          gh release upload "$TAG" "$RUNNER_TEMP/manifest/latest.json" \
+            "$RUNNER_TEMP/manifest/latest.json.sig" --clobber --repo "$GITHUB_REPOSITORY"

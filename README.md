@@ -35,7 +35,7 @@ Your ledger lives on your device. No email, no cloud account.
 
 ## What's coming
 
-Ledgerly is an early preview. These are on the way:
+Ledgerly 0.0.x is an early preview. These are on the way:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/features-dark.svg">
@@ -49,6 +49,7 @@ Ledgerly is an early preview. These are on the way:
 1. Download and run `Ledgerly-Setup.exe`. No administrator rights are needed.
 2. Ledgerly isn't code-signed yet, so Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
 3. Installing a newer version over an older one keeps your data.
+4. From 0.0.2 on, the installed app keeps itself up to date: it checks once a day (you can turn this off in Settings › About), downloads the update, checks it is genuine, and installs it when you restart or close Ledgerly. The portable zip, Linux and iPhone builds tell you when an update is out and link here.
 
 > [!WARNING]
 > **Uninstalling deletes your data.** Uninstalling Ledgerly (Settings › Apps) permanently deletes all Ledgerly data on the computer, including every user's ledger, after asking you to confirm. Your Recovery Key can't bring it back.
