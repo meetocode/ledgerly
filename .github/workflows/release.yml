@@ -235,10 +235,18 @@ jobs:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           umask 077
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem"
-          trap 'rm -f "$RUNNER_TEMP/update-key.pem"' EXIT
           if [[ -z "$UPDATE_SIGNING_KEY" ]]; then
             echo "::error::UPDATE_SIGNING_KEY is not set. Run tool/update_key_wizard.sh in the source repo."
+            exit 1
+          fi
+          # Rebuild a clean PEM from the secret, so spaces, joined lines or
+          # Windows line endings picked up when pasting it don't matter.
+          body="$(printf '%s' "$UPDATE_SIGNING_KEY" | tr -d '\r' | sed 's/-----[A-Z ]*-----//g' | tr -d ' \t\n')"
+          printf -- '-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n' \
+            "$(printf '%s' "$body" | fold -w 64)" > "$RUNNER_TEMP/update-key.pem"
+          trap 'rm -f "$RUNNER_TEMP/update-key.pem"' EXIT
+          if ! openssl pkey -in "$RUNNER_TEMP/update-key.pem" -noout 2>/dev/null; then
+            echo "::error::UPDATE_SIGNING_KEY isn't a readable Ed25519 private key. Paste it again from your password manager (BEGIN and END lines included)."
             exit 1
           fi
           tool/make_update_manifest.sh "$VERSION" "$(date -u +%F)" "$RUNNER_TEMP/dist" \
